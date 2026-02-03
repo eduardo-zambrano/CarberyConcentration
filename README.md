@@ -42,14 +42,6 @@ While the paper treats continuous distributions with Lebesgue measure, this form
 
 - Section 5 (Gaussian distributions): The closed-form expressions for Gaussian $Q_n$ involving determinants of tridiagonal matrices are specific to the continuous setting with Lebesgue measure.
 
-## Independence Structure
-
-The formalization verifies that under **independence**, the Carbery functional simplifies to:
-
-$$Q_n^{n+1}(p) = \prod_{i=1}^{n} \|p_i\|_{L^2}^2$$
-
-where **all marginals appear with power 2**. This is formalized in `carberyFunctional_of_independent`.
-
 ## Building
 
 ```bash
