@@ -27,16 +27,16 @@ While the paper treats continuous distributions with Lebesgue measure, this form
 
 | Paper Result | Lean Theorem | Status |
 |--------------|--------------|--------|
-| Theorem 2.1 (Carbery's Inequality) | `carberyInequality` | Axiomatized |
-| Definition 2.2 ($Q_n$ functional) | `carberyFunctional` | Defined |
-| Lemma 2.5 (Independence structure) | `carberyFunctional_of_independent` | Proved |
-| Theorem 3.1 (Markov) | `multivariate_markov` | Proved |
-| Theorem 3.2 (Chebyshev) | `multivariate_chebyshev` | Proved |
-| Theorem 3.4 (General moment) | `general_moment_bound` | Proved |
-| Theorem 3.5 (MGF) | `mgf_inequality` | Proved |
-| Proposition 4.1 (Structural properties) | `carberyFunctionalPow_marginal_sufficiency` | Proved |
-| Proposition 4.2 (Markov chain) | `carberyFunctionalPow_markov_chain_structure` | Proved |
-| Proposition 6.1 (Permutation bound) | `permutation_bound_uniform` | Proved |
+| Carbery's Inequality (Lebesgue form) | `carberyInequality` | Axiomatized |
+| $Q_n$ functional definition | `carberyFunctional` | Defined |
+| Independence structure lemma | `carberyFunctional_of_independent` | Proved |
+| Multivariate Markov inequality | `multivariate_markov` | Proved |
+| Multivariate Chebyshev inequality | `multivariate_chebyshev` | Proved |
+| General concentration inequality | `general_moment_bound` | Proved |
+| MGF inequality | `mgf_inequality` | Proved |
+| Structural properties (marginal sufficiency, tensorization) | `carberyFunctionalPow_marginal_sufficiency` | Proved |
+| Markov chain structure | `carberyFunctionalPow_markov_chain_structure` | Proved |
+| Permutation bound | `permutation_bound_uniform` | Proved |
 
 ### Results NOT formalized (continuous-only):
 
