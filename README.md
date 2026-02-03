@@ -5,9 +5,9 @@ This repository contains a Lean 4 formalization that verifies key mathematical c
 **"Dependence-Aware Concentration Inequalities: A Multivariate Extension via Carbery's Inequality"**
 by Eduardo Zambrano
 
-## Key Mathematical Insight: Carbery's Inequality (Expectation Form)
+## Point of Departure: Carbery's Inequality (Expectation Form)
 
-The central result adapted from Carbery's multilinear generalization of the Cauchy-Schwarz inequality is:
+All the results of the paper stem from an adaptation of Carbery's multilinear generalization of the Cauchy-Schwarz inequality:
 
 **Theorem (Carbery's Inequality, Expectation Form).** Let $\mathbf{X} = (X_1, \ldots, X_n)$ have joint density $p$ with marginal densities $p_1, \ldots, p_n$. For nonnegative measurable functions $g_i: \mathbb{R} \to \mathbb{R}_+$,
 
