@@ -571,8 +571,7 @@ theorem carberyFunctional_markov_chain_structure (hn : n ≥ 1)
 ## Tensorization (Independent Blocks)
 
 When two sequences of random variables X = (X₁,...,Xₘ) and Y = (Y₁,...,Yₖ)
-are independent blocks (meaning X and Y are jointly independent), the combined
-sequence Z = (X₁,...,Xₘ,Y₁,...,Yₖ) satisfies:
+are independent blocks, the combined sequence Z = (X₁,...,Xₘ,Y₁,...,Yₖ) satisfies:
 
   Q_{m+k}^{m+k+1}(p_Z) = Q_m^{m+1}(p_X) · Q_k^{k+1}(p_Y)
 
@@ -583,102 +582,425 @@ The key insight is that at the boundary between blocks, independence gives:
 
 This "breaks" the consecutive dependence chain, allowing the functional to factor.
 
-## Implementation Note
+## Design Decision: Homogeneous State Spaces
 
-The tensorization property is stated abstractly to avoid complex dependent type
-manipulations. The key mathematical content is captured by assuming the existence
-of marginal and bivariate marginal relationships between the combined and individual
-distributions.
+We prove tensorization for the **homogeneous** case where all coordinates share the
+same finite type α. This avoids dependent-type coercion issues that arise when
+Ω_Z : Fin (m+k) → Type* must match Ω_X : Fin m → Type* and Ω_Y : Fin k → Type*
+via Fin.addCases for type families.
+
+In the homogeneous setting:
+- State assignments are plain functions `Fin n → α` (no dependent types)
+- The split `(Fin (m+k) → α) ↔ (Fin m → α) × (Fin k → α)` requires no type casts
+- All existing infrastructure works unchanged
+
+The heterogeneous generalization is left as future work.
 -/
 
 section Tensorization
 
+/-! ### Fin Splitting Utilities -/
+
+/-- Round-trip property: splitting a function on `Fin (m + k)` into its left and right
+    components via `Fin.castAdd` and `Fin.natAdd`, then reassembling with `Fin.addCases`,
+    recovers the original function. -/
+theorem Fin.addCases_comp_eta {m k : ℕ} {α : Type*} (z : Fin (m + k) → α) :
+    Fin.addCases (z ∘ Fin.castAdd k) (z ∘ Fin.natAdd m) = z := by
+  ext i
+  obtain ⟨j | j, rfl⟩ := finSumFinEquiv.surjective i
+  · simp [Fin.addCases_left, Function.comp]
+  · simp [Fin.addCases_right, Function.comp]
+
+/-- The equivalence between `(Fin m → α) × (Fin k → α)` and `Fin (m + k) → α`
+    via `Fin.addCases`. -/
+def Equiv.finAddCases (m k : ℕ) (α : Type*) :
+    ((Fin m → α) × (Fin k → α)) ≃ (Fin (m + k) → α) where
+  toFun := fun ⟨x, y⟩ => Fin.addCases x y
+  invFun := fun z => (z ∘ Fin.castAdd k, z ∘ Fin.natAdd m)
+  left_inv := by
+    intro ⟨x, y⟩
+    refine Prod.ext ?_ ?_ <;> funext i <;> simp [Function.comp]
+  right_inv := fun z => Fin.addCases_comp_eta z
+
+/-- Summing a function over `Fin (m + k) → α` is equivalent to a double sum
+    over `(Fin m → α)` and `(Fin k → α)`, connected via `Fin.addCases`. -/
+lemma sum_fin_add_equiv {m k : ℕ} {α : Type*} [Fintype α]
+    (f : (Fin (m + k) → α) → ℝ≥0∞) :
+    ∑ z : Fin (m + k) → α, f z =
+    ∑ x : Fin m → α, ∑ y : Fin k → α, f (Fin.addCases x y) := by
+  calc ∑ z, f z
+      = ∑ p : (Fin m → α) × (Fin k → α), f (Fin.addCases p.1 p.2) :=
+        (Fintype.sum_equiv (Equiv.finAddCases m k α) _ _ (fun ⟨_, _⟩ => rfl)).symm
+    _ = ∑ x, ∑ y, f (Fin.addCases x y) := Fintype.sum_prod_type _
+
+/-! ### Independent Product of JointPMFs -/
+
+/-- The independent product of two JointPMFs on homogeneous finite state spaces.
+    Given `p` on `Fin m → α` and `q` on `Fin k → α`, produces `p ⊗ q` on
+    `Fin (m+k) → α` where `(p ⊗ q)(z) = p(z|_{Fin m}) · q(z|_{Fin k})`. -/
+def JointPMF.independentProduct {m k : ℕ} {α : Type*} [Fintype α] [DecidableEq α]
+    (p : JointPMF (fun _ : Fin m => α)) (q : JointPMF (fun _ : Fin k => α)) :
+    JointPMF (fun _ : Fin (m + k) => α) where
+  prob z := p.prob (fun i => z (Fin.castAdd k i)) *
+            q.prob (fun j => z (Fin.natAdd m j))
+  sum_eq_one := by
+    rw [sum_fin_add_equiv]
+    have h_simp : ∀ (x : Fin m → α) (y : Fin k → α),
+        p.prob (fun i => Fin.addCases x y (Fin.castAdd k i)) *
+        q.prob (fun j => Fin.addCases x y (Fin.natAdd m j)) =
+        p.prob x * q.prob y := by
+      intro x y
+      congr 1
+      · congr 1; funext i; simp
+      · congr 1; funext j; simp
+    simp_rw [h_simp, ← Finset.mul_sum, q.sum_eq_one, mul_one, p.sum_eq_one]
+
+/-! ### Sum Factoring Helpers -/
+
+/-- Factoring a conditional sum of products: when the condition and factors are
+    independent between the two summation variables, the sum factors. -/
+lemma sum_sum_ite_and_mul {ι₁ ι₂ : Type*} [Fintype ι₁] [Fintype ι₂]
+    (A : ι₁ → Prop) [DecidablePred A] (B : ι₂ → Prop) [DecidablePred B]
+    (f : ι₁ → ℝ≥0∞) (g : ι₂ → ℝ≥0∞) :
+    ∑ a, ∑ b, (if A a ∧ B b then f a * g b else 0) =
+    (∑ a, if A a then f a else 0) * (∑ b, if B b then g b else 0) := by
+  have h : ∀ a b, (if A a ∧ B b then f a * g b else 0) =
+      (if A a then f a else 0) * (if B b then g b else 0) := by
+    intro a b; by_cases ha : A a <;> by_cases hb : B b <;> simp [ha, hb]
+  simp_rw [h, ← Finset.mul_sum, ← Finset.sum_mul]
+
+/-! ### Marginal Relationship Lemmas
+
+These lemmas relate the marginals and bivariate marginals of the independent product
+`p.independentProduct q` to those of `p` and `q`. -/
+
+/-- Left boundary marginal: the 0-th marginal of `p ⊗ q` equals the 0-th marginal
+    of `p`. -/
+theorem independentProduct_marginal_left {m k : ℕ} (hm : m ≥ 1)
+    {α : Type*} [Fintype α] [DecidableEq α]
+    (p : JointPMF (fun _ : Fin m => α)) (q : JointPMF (fun _ : Fin k => α))
+    (s : α) :
+    (p.independentProduct q).marginal ⟨0, by omega⟩ s =
+    p.marginal ⟨0, hm⟩ s := by
+  simp only [JointPMF.marginal, JointPMF.independentProduct]
+  rw [sum_fin_add_equiv]
+  -- Simplify addCases projections to recover p.prob x and q.prob y
+  have h_p : ∀ (x : Fin m → α) (y : Fin k → α),
+      p.prob (fun i => Fin.addCases x y (Fin.castAdd k i)) = p.prob x := by
+    intro x y; congr 1; funext i; simp
+  have h_q : ∀ (x : Fin m → α) (y : Fin k → α),
+      q.prob (fun j => Fin.addCases x y (Fin.natAdd m j)) = q.prob y := by
+    intro x y; congr 1; funext j; simp
+  -- The index ⟨0, _⟩ is in the left block since 0 < m
+  have h_idx : ∀ (x : Fin m → α) (y : Fin k → α),
+      Fin.addCases x y ⟨0, by omega⟩ = x ⟨0, hm⟩ := by
+    intro x y
+    have h_fin : (⟨0, by omega⟩ : Fin (m + k)) =
+        Fin.castAdd k ⟨0, hm⟩ := Fin.ext rfl
+    simp only [h_fin, Fin.addCases_left]
+  simp_rw [h_idx, h_p, h_q]
+  congr 1; ext x
+  by_cases h : x ⟨0, hm⟩ = s
+  · simp [h, ← Finset.mul_sum, q.sum_eq_one]
+  · simp [h]
+
+/-- Right boundary marginal: the (m+k-1)-th marginal of `p ⊗ q` equals the (k-1)-th
+    marginal of `q`. -/
+theorem independentProduct_marginal_right {m k : ℕ} (hm : m ≥ 1) (hk : k ≥ 1)
+    {α : Type*} [Fintype α] [DecidableEq α]
+    (p : JointPMF (fun _ : Fin m => α)) (q : JointPMF (fun _ : Fin k => α))
+    (s : α) :
+    (p.independentProduct q).marginal ⟨m + k - 1, by omega⟩ s =
+    q.marginal ⟨k - 1, by omega⟩ s := by
+  simp only [JointPMF.marginal, JointPMF.independentProduct]
+  rw [sum_fin_add_equiv]
+  have h_p : ∀ (x : Fin m → α) (y : Fin k → α),
+      p.prob (fun i => Fin.addCases x y (Fin.castAdd k i)) = p.prob x := by
+    intro x y; congr 1; funext i; simp
+  have h_q : ∀ (x : Fin m → α) (y : Fin k → α),
+      q.prob (fun j => Fin.addCases x y (Fin.natAdd m j)) = q.prob y := by
+    intro x y; congr 1; funext j; simp
+  -- The index ⟨m+k-1, _⟩ is in the right block since m+k-1 ≥ m
+  have h_idx : ∀ (x : Fin m → α) (y : Fin k → α),
+      Fin.addCases x y ⟨m + k - 1, by omega⟩ = y ⟨k - 1, by omega⟩ := by
+    intro x y
+    have h_fin : (⟨m + k - 1, by omega⟩ : Fin (m + k)) =
+        Fin.natAdd m ⟨k - 1, by omega⟩ := Fin.ext (by simp [Fin.natAdd]; omega)
+    simp only [h_fin, Fin.addCases_right]
+  simp_rw [h_idx, h_p, h_q]
+  rw [Finset.sum_comm]
+  congr 1; ext y
+  by_cases h : y ⟨k - 1, by omega⟩ = s
+  · simp [h, ← Finset.sum_mul, p.sum_eq_one]
+  · simp [h]
+
+/-- **KEY**: Boundary bivariate marginal factorization.
+    The (m-1)-th bivariate marginal of `p ⊗ q` (connecting the last X-coordinate to the
+    first Y-coordinate) factors into a product of the corresponding univariate marginals.
+    This is the mathematical content that enables tensorization. -/
+theorem independentProduct_bivariate_boundary {m k : ℕ} (hm : m ≥ 1) (hk : k ≥ 1)
+    {α : Type*} [Fintype α] [DecidableEq α]
+    (p : JointPMF (fun _ : Fin m => α)) (q : JointPMF (fun _ : Fin k => α))
+    (s t : α) :
+    (p.independentProduct q).bivariateMarginai ⟨m - 1, by omega⟩ s t =
+    p.marginal ⟨m - 1, by omega⟩ s * q.marginal ⟨0, by omega⟩ t := by
+  simp only [JointPMF.bivariateMarginai, JointPMF.independentProduct, JointPMF.marginal]
+  rw [sum_fin_add_equiv]
+  -- Simplify addCases projections
+  have h_p : ∀ (x : Fin m → α) (y : Fin k → α),
+      p.prob (fun i => Fin.addCases x y (Fin.castAdd k i)) = p.prob x := by
+    intro x y; congr 1; funext i; simp
+  have h_q : ∀ (x : Fin m → α) (y : Fin k → α),
+      q.prob (fun j => Fin.addCases x y (Fin.natAdd m j)) = q.prob y := by
+    intro x y; congr 1; funext j; simp
+  -- m-1 is in the left block (m-1 < m)
+  have h_left : ∀ (x : Fin m → α) (y : Fin k → α),
+      Fin.addCases x y ⟨m - 1, by omega⟩ = x ⟨m - 1, by omega⟩ := by
+    intro x y
+    simp only [show (⟨m - 1, by omega⟩ : Fin (m + k)) = Fin.castAdd k ⟨m - 1, by omega⟩
+      from Fin.ext rfl, Fin.addCases_left]
+  -- (m-1)+1 = m is in the right block at index 0
+  have h_right : ∀ (x : Fin m → α) (y : Fin k → α),
+      Fin.addCases x y ⟨(m - 1) + 1, by omega⟩ = y ⟨0, by omega⟩ := by
+    intro x y
+    simp only [show (⟨(m - 1) + 1, by omega⟩ : Fin (m + k)) = Fin.natAdd m ⟨0, by omega⟩
+      from Fin.ext (by simp [Fin.natAdd]; omega), Fin.addCases_right]
+  simp_rw [h_left, h_right, h_p, h_q]
+  -- Factor: ∑_x ∑_y [x(m-1)=s ∧ y(0)=t] · p(x)·q(y)
+  --       = (∑_x [x(m-1)=s] · p(x)) · (∑_y [y(0)=t] · q(y))
+  exact sum_sum_ite_and_mul _ _ _ _
+
+/-- X-block bivariate marginals: for j < m-1, the j-th bivariate marginal of `p ⊗ q`
+    equals the j-th bivariate marginal of `p`. -/
+theorem independentProduct_bivariate_left {m k : ℕ}
+    {α : Type*} [Fintype α] [DecidableEq α]
+    (p : JointPMF (fun _ : Fin m => α)) (q : JointPMF (fun _ : Fin k => α))
+    (j : ℕ) (hj : j + 1 < m) (s t : α) :
+    (p.independentProduct q).bivariateMarginai ⟨j, by omega⟩ s t =
+    p.bivariateMarginai ⟨j, by omega⟩ s t := by
+  simp only [JointPMF.bivariateMarginai, JointPMF.independentProduct]
+  rw [sum_fin_add_equiv]
+  have h_p : ∀ (x : Fin m → α) (y : Fin k → α),
+      p.prob (fun i => Fin.addCases x y (Fin.castAdd k i)) = p.prob x := by
+    intro x y; congr 1; funext i; simp
+  have h_q : ∀ (x : Fin m → α) (y : Fin k → α),
+      q.prob (fun j => Fin.addCases x y (Fin.natAdd m j)) = q.prob y := by
+    intro x y; congr 1; funext j; simp
+  -- j and j+1 are both in the left block since j+1 < m
+  have hj1 : ∀ (x : Fin m → α) (y : Fin k → α),
+      Fin.addCases x y ⟨j, by omega⟩ = x ⟨j, by omega⟩ := by
+    intro x y
+    simp only [show (⟨j, by omega⟩ : Fin (m + k)) = Fin.castAdd k ⟨j, by omega⟩
+      from Fin.ext rfl, Fin.addCases_left]
+  have hj2 : ∀ (x : Fin m → α) (y : Fin k → α),
+      Fin.addCases x y ⟨j + 1, by omega⟩ = x ⟨j + 1, by omega⟩ := by
+    intro x y
+    simp only [show (⟨j + 1, by omega⟩ : Fin (m + k)) = Fin.castAdd k ⟨j + 1, hj⟩
+      from Fin.ext rfl, Fin.addCases_left]
+  simp_rw [hj1, hj2, h_p, h_q]
+  -- Now: ∑ x, ∑ y, if A(x) then p(x) * q(y) else 0 = ∑ x, if A(x) then p(x) else 0
+  -- Factor out q.sum_eq_one
+  congr 1; ext x
+  by_cases h : x ⟨j, by omega⟩ = s ∧ x ⟨j + 1, by omega⟩ = t
+  · simp [h, ← Finset.mul_sum, q.sum_eq_one]
+  · simp [h]
+
+/-- Y-block bivariate marginals: for j' < k-1, the (m+j')-th bivariate marginal of
+    `p ⊗ q` equals the j'-th bivariate marginal of `q`. -/
+theorem independentProduct_bivariate_right {m k : ℕ}
+    {α : Type*} [Fintype α] [DecidableEq α]
+    (p : JointPMF (fun _ : Fin m => α)) (q : JointPMF (fun _ : Fin k => α))
+    (j : ℕ) (hj : j + 1 < k) (s t : α) :
+    (p.independentProduct q).bivariateMarginai ⟨m + j, by omega⟩ s t =
+    q.bivariateMarginai ⟨j, by omega⟩ s t := by
+  simp only [JointPMF.bivariateMarginai, JointPMF.independentProduct]
+  rw [sum_fin_add_equiv]
+  have h_p : ∀ (x : Fin m → α) (y : Fin k → α),
+      p.prob (fun i => Fin.addCases x y (Fin.castAdd k i)) = p.prob x := by
+    intro x y; congr 1; funext i; simp
+  have h_q : ∀ (x : Fin m → α) (y : Fin k → α),
+      q.prob (fun j => Fin.addCases x y (Fin.natAdd m j)) = q.prob y := by
+    intro x y; congr 1; funext j; simp
+  -- m+j and m+j+1 are both in the right block since m+j ≥ m
+  have hj1 : ∀ (x : Fin m → α) (y : Fin k → α),
+      Fin.addCases x y ⟨m + j, by omega⟩ = y ⟨j, by omega⟩ := by
+    intro x y
+    simp only [show (⟨m + j, by omega⟩ : Fin (m + k)) = Fin.natAdd m ⟨j, by omega⟩
+      from Fin.ext (by simp [Fin.natAdd]), Fin.addCases_right]
+  have hj2 : ∀ (x : Fin m → α) (y : Fin k → α),
+      Fin.addCases x y ⟨m + j + 1, by omega⟩ = y ⟨j + 1, hj⟩ := by
+    intro x y
+    simp only [show (⟨m + j + 1, by omega⟩ : Fin (m + k)) = Fin.natAdd m ⟨j + 1, hj⟩
+      from Fin.ext (by simp [Fin.natAdd]; omega), Fin.addCases_right]
+  simp_rw [hj1, hj2, h_p, h_q]
+  -- Now: ∑ x, ∑ y, if B(y) then p(x) * q(y) else 0 = ∑ y, if B(y) then q(y) else 0
+  -- Swap sums and factor out p.sum_eq_one
+  rw [Finset.sum_comm]
+  congr 1; ext y
+  by_cases h : y ⟨j, by omega⟩ = s ∧ y ⟨j + 1, hj⟩ = t
+  · simp [h, ← Finset.sum_mul, p.sum_eq_one]
+  · simp [h]
+
+/-! ### Fin Product Splitting -/
+
+/-- Splitting a product over `Fin (m + k - 1)` at the boundary `m - 1` into three parts:
+    left block (indices `0` to `m-2`), boundary (index `m-1`), and right block
+    (indices `m` to `m+k-2`).
+
+    This is the combinatorial heart of the tensorization proof: the consecutive
+    bivariate product splits into X-block bivariates, the boundary term, and
+    Y-block bivariates.
+
+    **Technical note**: This is a standard finite product splitting fact. The proof
+    requires careful `Fin` index arithmetic. -/
+lemma Fin.prod_split_three {m k : ℕ} (hm : m ≥ 1) (hk : k ≥ 1)
+    (f : Fin (m + k - 1) → ℝ≥0∞) :
+    ∏ j : Fin (m + k - 1), f j =
+    (∏ j : Fin (m - 1), f ⟨j.val, by omega⟩) *
+    f ⟨m - 1, by omega⟩ *
+    (∏ j : Fin (k - 1), f ⟨m + j.val, by omega⟩) := by
+  -- Strategy: convert all Fin products to Finset.range products via a lifting
+  -- function g, then split using standard range/Ico lemmas, then convert back.
+  set g : ℕ → ℝ≥0∞ := fun i => if h : i < m + k - 1 then f ⟨i, h⟩ else 1 with hg_def
+  -- Key: for i < m+k-1, g i = f ⟨i, _⟩
+  have hg_val : ∀ (i : ℕ) (hi : i < m + k - 1), g i = f ⟨i, hi⟩ := by
+    intro i hi; simp [hg_def, hi]
+  -- Step 1: Convert LHS ∏ j : Fin (m+k-1), f j  to  ∏ i in range (m+k-1), g i
+  have lhs_eq : ∏ j : Fin (m + k - 1), f j = ∏ i ∈ Finset.range (m + k - 1), g i := by
+    conv_lhs => arg 2; ext j; rw [← hg_val j.val j.isLt]
+    exact Fin.prod_univ_eq_prod_range g (m + k - 1)
+  -- Step 2: Convert each RHS sub-product to range products
+  have left_eq : ∏ j : Fin (m - 1), f ⟨j.val, by omega⟩ =
+      ∏ i ∈ Finset.range (m - 1), g i := by
+    conv_lhs => arg 2; ext j; rw [← hg_val j.val (by omega)]
+    exact Fin.prod_univ_eq_prod_range g (m - 1)
+  have mid_eq : f ⟨m - 1, by omega⟩ = g (m - 1) := by
+    rw [← hg_val (m - 1) (by omega)]
+  have right_eq : ∏ j : Fin (k - 1), f ⟨m + j.val, by omega⟩ =
+      ∏ i ∈ Finset.range (k - 1), g (m + i) := by
+    conv_lhs => arg 2; ext j; rw [← hg_val (m + j.val) (by omega)]
+    exact Fin.prod_univ_eq_prod_range (fun i => g (m + i)) (k - 1)
+  rw [lhs_eq, left_eq, mid_eq, right_eq]
+  -- Step 3: Split range (m+k-1) into range m and Ico m (m+k-1)
+  rw [← Finset.prod_range_mul_prod_Ico g (show m ≤ m + k - 1 by omega)]
+  -- Step 4: Split range m = range (m-1) * g(m-1) via prod_range_succ
+  conv_lhs => rw [show m = m - 1 + 1 from by omega, Finset.prod_range_succ]
+  -- Step 5: Convert Ico m (m+k-1) product to range (k-1) product
+  rw [Finset.prod_Ico_eq_prod_range]
+  -- Now need to simplify the expressions involving m-1+1 back to m
+  have h_base_eq : ∀ x, m - 1 + 1 + x = m + x := by omega
+  simp only [h_base_eq]
+  have h_range_eq : m + k - 1 - (m - 1 + 1) = k - 1 := by omega
+  rw [h_range_eq]
+
+/-! ### Main Tensorization Theorem -/
+
 /-- **Tensorization Theorem** (Proposition 4.1(ii))
 
-    For independent blocks X = (X₁,...,Xₙ₁) and Y = (Y₁,...,Yₙ₂), the combined
-    sequence Z = (X₁,...,Xₙ₁,Y₁,...,Yₙ₂) satisfies:
+    For independent blocks X = (X₁,...,Xₘ) and Y = (Y₁,...,Yₖ) with the same finite
+    state space α, the combined sequence Z = (X₁,...,Xₘ,Y₁,...,Yₖ) satisfies:
 
-    Q_{n₁+n₂}^{n₁+n₂+1}(p_Z) = Q_{n₁}^{n₁+1}(p_X) · Q_{n₂}^{n₂+1}(p_Y)
+    Q_{m+k}^{m+k+1}(p_Z) = Q_m^{m+1}(p_X) · Q_k^{k+1}(p_Y)
 
-    The key mathematical insight:
-    - The Carbery functional is built from boundary marginals and consecutive
-      bivariate marginals
-    - At the boundary between blocks (between X_{n₁} and Y_1), independence gives:
-      p_{n₁,n₁+1}(x_{n₁}, y_1) = p_{n₁}(x_{n₁}) · q_1(y_1)
-    - This factorization "cuts" the chain, allowing the entire expression to separate
-
-    **Proof sketch**:
-    Q_{n₁+n₂}^{n₁+n₂+1}(p_Z) = ∑_z [p_1(z_1) · p_{12}(z_1,z_2) · ... · p_{n₁-1,n₁}(z_{n₁-1},z_{n₁})
-                                   · p_{n₁,n₁+1}(z_{n₁},z_{n₁+1})
-                                   · p_{n₁+1,n₁+2}(z_{n₁+1},z_{n₁+2}) · ... · p_{n₁+n₂}(z_{n₁+n₂})]
-
-    Using p_{n₁,n₁+1}(z_{n₁},z_{n₁+1}) = p^X_{n₁}(z_{n₁}) · p^Y_1(z_{n₁+1}):
-
-    = ∑_{x,y} [p^X_1(x_1) · ... · p^X_{n₁}(x_{n₁})] · [p^Y_1(y_1) · ... · p^Y_{n₂}(y_{n₂})]
-    = [∑_x p^X_1(x_1) · ... · p^X_{n₁}(x_{n₁})] · [∑_y p^Y_1(y_1) · ... · p^Y_{n₂}(y_{n₂})]
-    = Q_{n₁}^{n₁+1}(p_X) · Q_{n₂}^{n₂+1}(p_Y)
+    **Proof strategy**:
+    1. Unfold carberyFunctionalPow for p_Z = p.independentProduct q
+    2. Split the sum over Fin (m+k) → α into sums over (Fin m → α) × (Fin k → α)
+    3. For each (x, y), substitute addCases projections in marginals and bivariates
+    4. Split the bivariate product at j = m-1 using Fin.prod_split_three
+    5. Substitute marginal relationships (boundary and bivariate)
+    6. Show each summand factors as term_p(x) * term_q(y)
+    7. Apply Fubini (finite sums commute with products)
+    8. Recognize each factor as carberyFunctionalPow for p and q
 
     **Paper contribution**: Proposition 4.1(ii) - Tensorization property.
 
-    **Formalization approach**: We state this as an abstract theorem with explicit
-    hypotheses about how the marginals relate, avoiding complex dependent types.
-    The actual proof follows the algebraic argument above. -/
-theorem carberyFunctionalPow_tensorization {n₁ n₂ : ℕ}
-    (hn₁ : n₁ ≥ 1) (hn₂ : n₂ ≥ 1)
-    -- Carbery functionals for the two independent blocks
-    (Q₁ : ℝ≥0∞)  -- Q_{n₁}^{n₁+1}(p_X)
-    (Q₂ : ℝ≥0∞)  -- Q_{n₂}^{n₂+1}(p_Y)
-    -- Carbery functional for combined system
-    (Q_comb : ℝ≥0∞)  -- Q_{n₁+n₂}^{n₁+n₂+1}(p_Z)
-    -- The key hypothesis: due to independence at the boundary, Q_comb factors
-    -- This follows from the algebraic structure when p_Z = p_X ⊗ p_Y
-    (h_factors : Q_comb = Q₁ * Q₂) :
-    Q_comb = Q₁ * Q₂ := h_factors
-
-/-- Tensorization for JointPMFs on the same state space.
-
-    When X = (X₁,...,Xₙ) and Y = (Y₁,...,Yₙ) are independent sequences on the
-    same finite state space, the combined sequence satisfies tensorization.
-
-    This is a concrete version for the case where both blocks have the same
-    number of variables and the same state space at each position. -/
-theorem carberyFunctionalPow_tensorization_homogeneous {n : ℕ}
-    {Ω : Fin n → Type*} [∀ i, Fintype (Ω i)] [∀ i, DecidableEq (Ω i)]
-    (hn : n ≥ 1)
-    (p q : JointPMF Ω)
-    -- Combined distribution on 2n variables
-    {Ω₂ₙ : Fin (n + n) → Type*}
-    [∀ i, Fintype (Ω₂ₙ i)] [∀ i, DecidableEq (Ω₂ₙ i)]
-    (p_comb : JointPMF Ω₂ₙ)
-    -- Key hypothesis: the combined distribution is the independent product p ⊗ q
-    -- This means the bivariate marginal at the boundary factors
-    (h_independent_blocks :
-      -- The boundary bivariate marginal (between X_n and Y_1) factors into marginals
-      -- This is the mathematical condition encoding that X and Y are independent
-      carberyFunctionalPow (by omega : n + n ≥ 1) p_comb =
-      carberyFunctionalPow hn p * carberyFunctionalPow hn q) :
-    carberyFunctionalPow (by omega : n + n ≥ 1) p_comb =
-    carberyFunctionalPow hn p * carberyFunctionalPow hn q :=
-  h_independent_blocks
-
-/-- The tensorization property implies that Q_n^{n+1} is multiplicative under
-    independent concatenation.
-
-    This is the abstract algebraic property: if Z = (X, Y) where X ⊥ Y,
-    then Q^{n+1}(Z) = Q^{n+1}(X) · Q^{n+1}(Y).
-
-    **Mathematical content**: The proof relies on:
-    1. Marginals of Z decompose: p^Z_1 = p^X_1, p^Z_{n₁+n₂} = p^Y_{n₂}
-    2. Bivariate marginals within blocks match: p^Z_{j,j+1} = p^X_{j,j+1} for j < n₁-1
-    3. Bivariate marginals in second block match: p^Z_{n₁+j,n₁+j+1} = p^Y_{j,j+1}
-    4. KEY: Boundary factors: p^Z_{n₁-1,n₁}(x,y) = p^X_{n₁-1}(x) · p^Y_1(y)
-
-    The factorization at the boundary allows Fubini's theorem to separate the sum.
-
-    **Paper contribution**: Proved in Proposition 4.1(ii). -/
-theorem carberyFunctionalPow_multiplicative_independent
-    (Q₁ Q₂ : ℝ≥0∞) :
-    Q₁ * Q₂ = Q₁ * Q₂ := rfl
+    **Formalization status**: The proof depends on `Fin.prod_split_three` (a standard
+    product splitting fact whose Lean proof requires delicate Fin index arithmetic).
+    All other ingredients (product PMF, marginal relationships, boundary factorization,
+    sum splitting) are fully proved above. -/
+theorem carberyFunctionalPow_tensorization {m k : ℕ} (hm : m ≥ 1) (hk : k ≥ 1)
+    {α : Type*} [Fintype α] [DecidableEq α]
+    (p : JointPMF (fun _ : Fin m => α))
+    (q : JointPMF (fun _ : Fin k => α)) :
+    carberyFunctionalPow (by omega : m + k ≥ 1) (p.independentProduct q) =
+    carberyFunctionalPow hm p * carberyFunctionalPow hk q := by
+  -- Unfold the Carbery functional on both sides
+  simp only [carberyFunctionalPow]
+  -- Split the sum over Fin (m+k) → α into nested sums over (Fin m → α) × (Fin k → α)
+  rw [sum_fin_add_equiv]
+  -- Transform RHS (∑ P) * (∑ Q) into ∑ x, ∑ y, P(x) * Q(y)
+  rw [Finset.sum_mul]
+  refine Finset.sum_congr rfl fun x _ => ?_
+  rw [Finset.mul_sum]
+  refine Finset.sum_congr rfl fun y _ => ?_
+  -- Now prove pointwise: term_Z(addCases x y) = term_p(x) * term_q(y)
+  -- Beta/eta-reduce (fun i ↦ Fin.addCases x y i) to Fin.addCases x y
+  have h_eta : (fun i => Fin.addCases x y i) = Fin.addCases x y := rfl
+  simp only [h_eta]
+  -- Helper: resolve Fin.addCases for indices in the left block (< m)
+  have hac_l : ∀ (j : ℕ) (hj : j < m),
+      Fin.addCases x y (⟨j, by omega⟩ : Fin (m + k)) = x ⟨j, hj⟩ := by
+    intro j hj
+    have : (⟨j, (by omega : j < m + k)⟩ : Fin (m + k)) = Fin.castAdd k ⟨j, hj⟩ := Fin.ext rfl
+    rw [this, Fin.addCases_left]
+  -- Helper: resolve Fin.addCases for indices in the right block (≥ m)
+  have hac_r : ∀ (j : ℕ) (hj : j < k),
+      Fin.addCases x y (⟨m + j, by omega⟩ : Fin (m + k)) = y ⟨j, hj⟩ := by
+    intro j hj
+    have : (⟨m + j, (by omega : m + j < m + k)⟩ : Fin (m + k)) = Fin.natAdd m ⟨j, hj⟩ :=
+      Fin.ext rfl
+    rw [this, Fin.addCases_right]
+  -- Step 1: Left boundary marginal
+  rw [hac_l 0 hm, independentProduct_marginal_left hm p q]
+  -- Step 2: Right boundary marginal (m + k - 1 = m + (k - 1))
+  have hac_last : Fin.addCases x y (⟨m + k - 1, by omega⟩ : Fin (m + k)) =
+      y ⟨k - 1, by omega⟩ := by
+    have : (⟨m + k - 1, by omega⟩ : Fin (m + k)) = Fin.natAdd m ⟨k - 1, by omega⟩ :=
+      Fin.ext (by dsimp [Fin.natAdd]; omega)
+    rw [this, Fin.addCases_right]
+  rw [hac_last, independentProduct_marginal_right hm hk p q]
+  -- Step 3: Split the bivariate product into left block, boundary, right block
+  rw [Fin.prod_split_three hm hk]
+  -- Step 4: Boundary bivariate → p.marginal(m-1) * q.marginal(0)
+  -- The boundary second index from Fin.prod_split_three is m-1+1 (NOT m).
+  -- We must NOT normalize m-1+1→m via simp (that wraps the Fin proof in Eq.mpr,
+  -- breaking rw matching). Instead, handle it directly.
+  have hac_bdy : ∀ (h : m - 1 + 1 < m + k),
+      Fin.addCases x y (⟨m - 1 + 1, h⟩ : Fin (m + k)) = y ⟨0, hk⟩ := by
+    intro h
+    have : (⟨m - 1 + 1, h⟩ : Fin (m + k)) = Fin.natAdd m ⟨0, hk⟩ :=
+      Fin.ext (by dsimp [Fin.natAdd]; omega)
+    rw [this, Fin.addCases_right]
+  rw [hac_l (m - 1) (by omega), hac_bdy,
+      independentProduct_bivariate_boundary hm hk p q]
+  -- Step 5: Left sub-product (X-block bivariates)
+  have h_left_prod : ∀ (j : Fin (m - 1)),
+      (p.independentProduct q).bivariateMarginai ⟨j.val, by omega⟩
+        (Fin.addCases x y ⟨j.val, by omega⟩)
+        (Fin.addCases x y ⟨j.val + 1, by omega⟩) =
+      p.bivariateMarginai j
+        (x ⟨j.val, Nat.lt_of_lt_pred j.isLt⟩)
+        (x ⟨j.val + 1, Nat.add_lt_of_lt_sub j.isLt⟩) := by
+    intro j
+    rw [hac_l j.val (by omega), hac_l (j.val + 1) (by omega),
+        independentProduct_bivariate_left p q j.val (by omega)]
+  simp_rw [h_left_prod]
+  -- Step 6: Right sub-product (Y-block bivariates)
+  have h_right_prod : ∀ (j : Fin (k - 1)),
+      (p.independentProduct q).bivariateMarginai ⟨m + j.val, by omega⟩
+        (Fin.addCases x y ⟨m + j.val, by omega⟩)
+        (Fin.addCases x y ⟨m + j.val + 1, by omega⟩) =
+      q.bivariateMarginai j
+        (y ⟨j.val, Nat.lt_of_lt_pred j.isLt⟩)
+        (y ⟨j.val + 1, Nat.add_lt_of_lt_sub j.isLt⟩) := by
+    intro j
+    have h2 : Fin.addCases x y (⟨m + j.val + 1, by omega⟩ : Fin (m + k)) =
+        y ⟨j.val + 1, by omega⟩ := hac_r (j.val + 1) (by omega)
+    rw [hac_r j.val (by omega), h2,
+        independentProduct_bivariate_right p q j.val (by omega)]
+  simp_rw [h_right_prod]
+  -- Step 7: All terms now use p/q marginals and bivariates. Rearrange.
+  ring
 
 /-!
 ### Concrete Tensorization: Product of Univariate PMFs
