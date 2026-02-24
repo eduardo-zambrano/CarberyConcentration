@@ -1,5 +1,9 @@
 # Lean Formalization: Carbery Concentration Inequalities
 
+[![Lean 4](https://img.shields.io/badge/Lean_4-v4.24.0-blue)](https://lean-lang.org/)
+[![Mathlib](https://img.shields.io/badge/Mathlib-v4.24.0-blue)](https://github.com/leanprover-community/mathlib4)
+[![Sorry count](https://img.shields.io/badge/sorry_count-0-brightgreen)]()
+
 This repository contains a Lean 4 formalization that verifies key mathematical claims from the paper:
 
 **"Dependence-Aware Concentration Inequalities: A Multivariate Extension via Carbery's Inequality"**
